@@ -1,2 +1,2 @@
 # Fine-Tuning-Natural-Language-Processing
-o investigate how enhancing static datasets with contextual information improves the comprehension and response quality of Large Language Models (LLMs).
+This project explores two critical frontiers in Large Language Model (LLM) development: improving response quality through contextual data enhancement and developing robust frameworks for detecting systemic biases in generated text. The research focuses on the intersection of Data Simulation and Synthetic Data Creation to build more reliable and equitable AI systems.
