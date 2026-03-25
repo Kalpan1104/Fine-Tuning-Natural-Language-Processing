@@ -1,0 +1,11 @@
+case,symptoms,true_diagnosis,predicted,correct
+1,"pain somewhere, related to your reason for consulting, characterize your pain:: ...",GERD,Gastroesophageal reflux disease (GERD) is unlikely,✓
+2,"pain somewhere, related to your reason for consulting, characterize your pain:: ...",Bronchitis,Acute bronchitis,✓
+3,"started or taken any antipsychotic medication within the last 7 days, ever felt ...",Acute dystonic reactions,Neuroleptic Malignant Syndrome (NMS),✗
+4,"do you live with 4 or more people, do you attend or work in a daycare, pain some...",Acute laryngitis,tonsillitis,✗
+5,"been in contact with a person with similar symptoms in the past 2 weeks, had sig...",URTI,Meningitis,✗
+6,"do you live with 4 or more people, do you attend or work in a daycare, pain some...",URTI,"Temporomandibular Joint Disorder (TMJ) - No,",✗
+7,"pain somewhere, related to your reason for consulting, characterize your pain:: ...",Inguinal hernia,Diverticulitis,✗
+8,"chest pain even at rest, ever had a spontaneous pneumothorax, pain somewhere, re...",Spontaneous pneumothorax,Pneumothorax,✓
+9,"pain somewhere, related to your reason for consulting, characterize your pain:: ...",Bronchitis,Angina Pectoris,✗
+10,"pain somewhere, related to your reason for consulting, characterize your pain:: ...",GERD,Gastroesophageal reflux disease (GERD) is unlikely,✓
