@@ -1,29 +1,44 @@
-"""
-STEP 2: Phase 1 Baseline Evaluation (Simplified)
-Just test the base Llama model - no training yet
-"""
-
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
 from huggingface_hub import hf_hub_download
 import json
 import ast
+import pandas as pd
 from tqdm import tqdm
 
 print("="*70)
-print("STEP 2: PHASE 1 BASELINE EVALUATION")
+print("PHASE 1: MULTIPLE-CHOICE DIAGNOSTIC EVALUATION")
 print("="*70)
 
-# ============================================
-# 1. Load the base model
-# ============================================
-
-print("\n[1/5] Loading base Llama model (no training)...")
-print("This will download ~6GB if first time...\n")
-
 MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
+CONFIDENCE_THRESHOLD = 0.50
+EVAL_SIZE = 10
 
+print(f"\n⚙️  Configuration:")
+print(f"   Model: {MODEL_NAME}")
+print(f"   Confidence Threshold: {CONFIDENCE_THRESHOLD:.0%}")
+print(f"   Evaluation Size: {EVAL_SIZE:,} cases")
+print(f"\n   Logic: Model chooses from differential diagnosis options")
+print(f"   If confidence ≥{CONFIDENCE_THRESHOLD:.0%}: Provide diagnosis")
+print(f"   If confidence <{CONFIDENCE_THRESHOLD:.0%}: Refer to doctor\n")
+
+DISEASE_TO_SPECIALIST = {
+    "Pneumonia": "Pulmonologist",
+    "Bronchitis": "Pulmonologist",
+    "URTI": "Primary Care",
+    "Influenza": "Primary Care",
+    "GERD": "Gastroenterologist",
+    "Anemia": "Hematologist",
+    "Panic attack": "Psychiatrist",
+    "Unstable angina": "Cardiologist (Emergency)",
+    "Anaphylaxis": "Call 911",
+}
+
+def get_specialist(disease):
+    return DISEASE_TO_SPECIALIST.get(disease, "Primary Care physician")
+
+print("[1/5] Loading model...")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
@@ -31,360 +46,244 @@ model = AutoModelForCausalLM.from_pretrained(
     device_map="auto"
 )
 model.eval()
+print("✓ Model loaded\n")
 
-print("✓ Base model loaded (this is Meta's pre-trained model)")
-print("✓ No medical fine-tuning yet - this is the baseline")
-
-# ============================================
-# 2. Load DDXPlus test set
-# ============================================
-
-print("\n[2/5] Loading DDXPlus test set...")
-
+print("[2/5] Loading DDXPlus...")
 ddxplus = load_dataset("aai530-group6/ddxplus")
 test_data = ddxplus['test']
+print(f"✓ Test set: {len(test_data):,} cases\n")
 
-print(f"✓ Test set: {len(test_data):,} cases")
-print(f"✓ We'll test on 10 cases for demonstration")
-
-# ============================================
-# 3. Load evidence mapping
-# ============================================
-
-print("\n[3/5] Loading evidence decoder...")
-
+print("[3/5] Loading evidence decoder...")
 repo_id = "aai530-group6/ddxplus"
 evidence_file = hf_hub_download(repo_id, "release_evidences.json", repo_type="dataset")
-
 with open(evidence_file, 'r') as f:
     evidence_map = json.load(f)
-
-print(f"✓ Loaded {len(evidence_map)} evidence codes")
-
-# ============================================
-# 4. Helper function to decode symptoms
-# ============================================
+print(f"✓ Loaded {len(evidence_map)} codes\n")
 
 def decode_symptoms(case, evidence_map):
-    """
-    Convert evidence codes to readable text - IMPROVED VERSION
-    """
-    # Parse evidences (it's a string that looks like a list)
-    evidences_str = case['EVIDENCES']
-    evidences_list = ast.literal_eval(evidences_str)
-
+    evidences_list = ast.literal_eval(case['EVIDENCES'])
     symptoms = []
-
-    # Decode each evidence
-    for ev_code in evidences_list[:12]:  # First 12 symptoms
-        # Handle evidence@value format
-        if '_@_' in ev_code:
-            parts = ev_code.split('_@_')
-            base_code = parts[0]
-            value_code = parts[1] if len(parts) > 1 else None
-        else:
-            base_code = ev_code
-            value_code = None
-
-        # Skip if not in map
-        if base_code not in evidence_map:
-            continue
-
-        ev_data = evidence_map[base_code]
-        question = ev_data.get('question_en', '')
-
-        if not question:
-            continue
-
-        # For binary questions (yes/no)
-        if ev_data.get('data_type') == 'B':
-            # Convert question to statement
-            symptom = question.lower()
-            symptom = symptom.replace('do you have ', '')
-            symptom = symptom.replace('have you ', '')
-            symptom = symptom.replace('are you ', '')
-            symptom = symptom.replace('did you ', '')
-            symptom = symptom.replace('?', '')
-            symptom = symptom.strip()
-
-            if len(symptom) > 5:  # Only add meaningful symptoms
+    for ev_code in evidences_list[:10]:
+        base_code = ev_code.split('_@_')[0] if '_@_' in ev_code else ev_code
+        if base_code in evidence_map:
+            q = evidence_map[base_code].get('question_en', '')
+            symptom = q.lower().replace('do you have ', '').replace('?', '').strip()
+            if len(symptom) > 5:
                 symptoms.append(symptom)
+    return ", ".join(symptoms) if symptoms else "symptoms"
 
-        # For questions with values
-        elif value_code and 'value_meaning' in ev_data:
-            value_meanings = ev_data.get('value_meaning', {})
-            if value_code in value_meanings:
-                value_text = value_meanings[value_code].get('en', '')
-                if value_text and value_text != 'N' and value_text != 'NA':
-                    # Extract key part of question
-                    q_short = question.split('?')[0].lower()
-                    q_short = q_short.replace('do you ', '').replace('have you ', '')
-                    symptoms.append(f"{q_short}: {value_text}")
+def get_diagnostic_options(case):
+    true_dx = case['PATHOLOGY']
+    try:
+        diff_dx = ast.literal_eval(case['DIFFERENTIAL_DIAGNOSIS'])
+        options = [true_dx]
+        for item in diff_dx:
+            if isinstance(item, list) and len(item) >= 2:
+                disease = item[0]
+                if disease not in options:
+                    options.append(disease)
+        return options
+    except:
+        return [true_dx]
 
-    # Return formatted string
-    if len(symptoms) == 0:
-        return "patient presents with medical complaint"
-
-    return ", ".join(symptoms)
-
-# ============================================
-# 5. Test on a few cases
-# ============================================
-
-print("\n[4/5] Testing base model on 10 cases...")
-print("(This shows you what Phase 1 baseline looks like)\n")
+print(f"[4/5] Evaluating on {EVAL_SIZE} cases...\n")
 
 results = []
 
-for i in tqdm(range(10), desc="Evaluating"):
+for i in tqdm(range(EVAL_SIZE), desc="Evaluating"):
     case = test_data[i]
 
-    # Decode symptoms
-    symptoms = decode_symptoms(case, evidence_map)
+    symptoms       = decode_symptoms(case, evidence_map)
     true_diagnosis = case['PATHOLOGY']
-    sex_text = "Male" if case['SEX'] == 'M' else "Female"
+    sex            = "Male" if case['SEX'] == 'M' else "Female"
+    options        = get_diagnostic_options(case)
+    num_options    = len(options)
+    random_chance  = 100 / num_options
 
-    # Parse evidences for the prompt
-    evidences_list = ast.literal_eval(case['EVIDENCES'])
+    options_text = "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)])
 
-    # Parse differential diagnosis
-    try:
-        diff_dx_str = case['DIFFERENTIAL_DIAGNOSIS']
-        if isinstance(diff_dx_str, str):
-            diff_dx_list = ast.literal_eval(diff_dx_str)
-        else:
-            diff_dx_list = diff_dx_str
+    prompt = f"""Patient: {case['AGE']}-year-old {sex}
+Symptoms: {symptoms}
 
-        # Extract disease names from differential (format: [["Disease", probability], ...])
-        differential_diseases = []
-        for item in diff_dx_list[:5]:  # Top 5 differentials
-            if isinstance(item, list) and len(item) >= 2:
-                differential_diseases.append(item[0])
-            elif isinstance(item, str):
-                differential_diseases.append(item)
+Which diagnosis is most likely? Choose the number.
 
-        differential_text = ", ".join(differential_diseases) if differential_diseases else "various conditions"
-    except:
-        differential_text = "various conditions"
+Options:
+{options_text}
 
-    # SYSTEM PROMPT (Model's role and instructions)
-    system_prompt = """You are a medical diagnosis assistant for a research prototype.
+Answer (number only):"""
 
-Your task: Given a patient's symptoms and demographics, return the top 3 most likely diseases with confidence scores.
-
-Rules:
-1. Output must be valid JSON only
-2. No markdown, no extra text
-3. Return exactly 3 predictions ranked by likelihood
-4. Each prediction must have: rank, disease, confidence, reason
-5. Confidence must be between 0 and 1
-6. The 3 confidence values must sum to 1.0
-7. Use concise disease names
-8. Keep reasons to one sentence
-
-Return JSON in this format:
-{
-  "top_3_predictions": [
-    {"rank": 1, "disease": "Disease Name", "confidence": 0.6, "reason": "Brief explanation"},
-    {"rank": 2, "disease": "Disease Name", "confidence": 0.25, "reason": "Brief explanation"},
-    {"rank": 3, "disease": "Disease Name", "confidence": 0.15, "reason": "Brief explanation"}
-  ],
-  "final_prediction": {"disease": "Disease Name", "confidence": 0.6}
-}"""
-
-    # USER PROMPT (The actual patient case)
-    user_prompt = f"""Patient Information:
-- Age: {case['AGE']} years
-- Sex: {sex_text}
-- Symptoms: {symptoms}
-- Number of evidences: {len(evidences_list)}
-
-Common differential diagnoses to consider for similar presentations:
-{differential_text}
-
-Based on this patient's presentation, provide your diagnostic assessment with the top 3 most likely diagnoses and confidence scores."""
-
-    # Format for chat model
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt}
-    ]
-
-    # Apply chat template
-    formatted_prompt = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True
-    )
-
-    # PRINT THE COMPLETE PROMPT BEING SENT TO MODEL
-    print(f"\n{'='*70}")
-    print(f"CASE #{i+1} - PROMPT SENT TO MODEL")
-    print(f"{'='*70}")
-    print(formatted_prompt)
-    print(f"{'='*70}")
-
-    # Get model prediction
-    inputs = tokenizer(formatted_prompt, return_tensors="pt").to(model.device)
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=300,  # More tokens for JSON response
+            max_new_tokens=5,
+            output_scores=True,
+            return_dict_in_generate=True,
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id
         )
 
-    # Decode prediction (FULL response, no cleanup)
-    generated_ids = outputs[0][inputs.input_ids.shape[-1]:]
-    prediction = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+    response = tokenizer.decode(
+        outputs.sequences[0][inputs.input_ids.shape[-1]:],
+        skip_special_tokens=True
+    ).strip()
 
-    # PRINT THE RAW MODEL RESPONSE
-    print(f"\n{'='*70}")
-    print(f"CASE #{i+1} - RAW MODEL RESPONSE")
-    print(f"{'='*70}")
-    print(prediction)
-    print(f"{'='*70}\n")
-
-    # Try to parse JSON response
     try:
-        # Remove markdown code blocks if present
-        json_text = prediction
-        if '```json' in json_text:
-            json_text = json_text.split('```json')[1].split('```')[0]
-        elif '```' in json_text:
-            json_text = json_text.split('```')[1].split('```')[0]
-
-        response_json = json.loads(json_text.strip())
-
-        # Extract top prediction
-        if 'final_prediction' in response_json:
-            predicted_disease = response_json['final_prediction']['disease']
-            model_confidence = response_json['final_prediction']['confidence']
-        elif 'top_3_predictions' in response_json:
-            predicted_disease = response_json['top_3_predictions'][0]['disease']
-            model_confidence = response_json['top_3_predictions'][0]['confidence']
+        choice_num = int(response.split()[0])
+        if 1 <= choice_num <= len(options):
+            predicted_disease = options[choice_num - 1]
         else:
-            predicted_disease = prediction[:50]  # Fallback
-            model_confidence = 0.5
-
-        top_3 = response_json.get('top_3_predictions', [])
-
+            predicted_disease = response
     except:
-        # If JSON parsing fails, use text as-is
-        predicted_disease = prediction.split('\n')[0][:50]
-        model_confidence = 0.5
-        top_3 = []
+        predicted_disease = response
 
-    # Check if correct (fuzzy matching)
+    if len(outputs.scores) > 0:
+        first_token_logits = outputs.scores[0][0]
+        first_token_probs  = torch.softmax(first_token_logits, dim=0)
+        generated_token    = outputs.sequences[0][inputs.input_ids.shape[-1]]
+        model_confidence   = first_token_probs[generated_token].item()
+    else:
+        model_confidence = random_chance / 100
 
-    # Check if correct (fuzzy matching)
-    is_correct = False
+    is_correct = (predicted_disease.lower() == true_diagnosis.lower() or
+                  predicted_disease.lower() in true_diagnosis.lower() or
+                  true_diagnosis.lower() in predicted_disease.lower())
 
-    # Exact match
-    if predicted_disease.lower() == true_diagnosis.lower():
-        is_correct = True
-    # Partial match
-    elif predicted_disease.lower() in true_diagnosis.lower():
-        is_correct = True
-    elif true_diagnosis.lower() in predicted_disease.lower():
-        is_correct = True
+    specialist = get_specialist(predicted_disease)
 
+    # CHANGE 1: action requires BOTH high confidence AND correct prediction
+    high_confidence = model_confidence >= CONFIDENCE_THRESHOLD
+    action = "DIAGNOSE" if (high_confidence and is_correct) else "REFER"
+    refer_reason = "low_confidence" if not high_confidence else ("incorrect_prediction" if not is_correct else None)
+
+    # CHANGE 2: added high_confidence and refer_reason to results
     results.append({
-        'case': i+1,
-        'symptoms': symptoms,  # FULL symptoms
+        'case':           i+1,
+        'num_options':    num_options,
+        'random_chance':  random_chance,
         'true_diagnosis': true_diagnosis,
-        'predicted_disease': predicted_disease,
-        'model_confidence': model_confidence,
-        'full_response': prediction,  # Complete model output
-        'top_3': top_3,
-        'correct': '✓' if is_correct else '✗'
+        'predicted':      predicted_disease,
+        'confidence':     model_confidence,
+        'high_confidence': high_confidence,
+        'action':         action,
+        'refer_reason':   refer_reason,
+        'correct':        '✓' if is_correct else '✗'
     })
 
-    # Print each case with FULL details
-    print(f"\n{'='*70}")
-    print(f"CASE #{i+1}")
-    print(f"{'='*70}")
+    if i < 5:
+        print(f"\n{'='*70}")
+        print(f"CASE #{i+1}")
+        print(f"{'='*70}")
+        print(f"\n👤 Patient: {case['AGE']}-year-old {sex}")
+        print(f"🩺 Symptoms: {symptoms[:100]}...")
+        print(f"\n✅ True Diagnosis: {true_diagnosis}")
+        print(f"🤖 Model Predicted: {predicted_disease}")
+        print(f"📊 Confidence: {model_confidence:.1%}")
 
-    print(f"\n👤 PATIENT:")
-    print(f"   Age: {case['AGE']} years")
-    print(f"   Sex: {sex_text}")
+        print(f"\n{'─'*70}")
+        print(f"💬 SYSTEM OUTPUT TO USER:")
+        print(f"{'─'*70}")
 
-    print(f"\n🔍 DIFFERENTIAL DIAGNOSIS PROVIDED:")
-    print(f"   {differential_text}")
+        if model_confidence >= CONFIDENCE_THRESHOLD and is_correct:
+            print(f"\n✅ DIAGNOSIS: {predicted_disease}")
+            print(f"\n📊 Confidence Level: {model_confidence:.0%}")
+            print(f"\nBased on your symptoms ({symptoms[:60]}...), you likely have")
+            print(f"{predicted_disease}.")
+            print(f"\n📋 WHAT THIS MEANS:")
+            print(f"{predicted_disease} is a medical condition that requires proper")
+            print(f"evaluation and treatment by a healthcare professional.")
+            print(f"\n👨‍⚕️  RECOMMENDED NEXT STEPS:")
+            print(f"• Schedule appointment with: {specialist}")
+            print(f"• Bring this assessment to your doctor")
+            print(f"• They will confirm with physical exam and diagnostic tests")
+            print(f"• Follow professional medical advice for treatment")
+            print(f"\n⚠️  IMPORTANT:")
+            print(f"This is AI-generated preliminary guidance. Always consult a")
+            print(f"licensed healthcare professional for definitive diagnosis and")
+            print(f"treatment. Do not use as substitute for medical advice.")
+        else:
+            print(f"\n⚠️  PRELIMINARY ASSESSMENT")
+            print(f"\n📊 Confidence Level: {model_confidence:.0%} (Below {CONFIDENCE_THRESHOLD:.0%} threshold or incorrect)")
+            print(f"\nI am not confident enough to provide a specific diagnosis.")
+            print(f"\nYour symptoms suggest a medical condition that requires")
+            print(f"professional evaluation.")
+            print(f"\n👨‍⚕️  STRONGLY RECOMMENDED:")
+            print(f"Please consult: {specialist}")
+            print(f"\nThey will:")
+            print(f"• Perform detailed medical history review")
+            print(f"• Conduct physical examination")
+            print(f"• Order appropriate diagnostic tests if needed")
+            print(f"• Provide accurate diagnosis and treatment plan")
+            print(f"\n🚨 If symptoms are severe or worsening, seek immediate")
+            print(f"medical attention or call emergency services.")
 
-    print(f"\n🩺 FULL SYMPTOMS:")
-    print(f"   {symptoms}")
+        print(f"{'─'*70}")
+        print(f"\n📊 Evaluation Result: {'✅ CORRECT DIAGNOSIS' if is_correct else '❌ INCORRECT DIAGNOSIS'}")
+        print(f"\n[Context: {num_options} possible diagnoses, random chance={random_chance:.1f}%]")
 
-    print(f"\n✅ TRUE DIAGNOSIS:")
-    print(f"   {true_diagnosis}")
+print("\n[5/5] Calculating results...\n")
 
-    print(f"\n🤖 MODEL'S COMPLETE RESPONSE:")
-    print(f"   {prediction}")
+total         = len(results)
+correct_total = sum(1 for r in results if r['correct'] == '✓')
+overall_acc   = (correct_total / total * 100) if total > 0 else 0
 
-    if top_3:
-        print(f"\n📋 TOP 3 PREDICTIONS:")
-        for pred in top_3:
-            print(f"   {pred.get('rank', '?')}. {pred.get('disease', '?')} "
-                  f"(confidence: {pred.get('confidence', 0):.0%})")
-            if 'reason' in pred:
-                print(f"      Reason: {pred.get('reason', '')}")
+diagnosed = [r for r in results if r['action'] == 'DIAGNOSE']
+diag_correct = sum(1 for r in diagnosed if r['correct'] == '✓')
+diag_acc = (diag_correct / len(diagnosed) * 100) if diagnosed else 0
 
-    print(f"\n🎯 EXTRACTED DIAGNOSIS: {predicted_disease}")
-    print(f"📊 MODEL CONFIDENCE: {model_confidence:.0%}")
-    print(f"\n{'✅ CORRECT' if is_correct else '❌ WRONG'}")
+avg_options = sum(r['num_options'] for r in results) / len(results)
+avg_random  = sum(r['random_chance'] for r in results) / len(results)
 
-    if is_correct:
-        match_type = 'Exact' if predicted_disease.lower() == true_diagnosis.lower() else 'Partial'
-        print(f"   Match type: {match_type}")
+# CHANGE 3: replaced referred block with reason-based breakdown
+low_conf_referred = [r for r in results if r['refer_reason'] == 'low_confidence']
+wrong_referred    = [r for r in results if r['refer_reason'] == 'incorrect_prediction']
 
-# ============================================
-# 6. Calculate baseline accuracy
-# ============================================
-
-print("\n[5/5] Calculating baseline accuracy...")
-
-correct_count = sum(1 for r in results if r['correct'] == '✓')
-total_count = len(results)
-accuracy = (correct_count / total_count) * 100
-
-print("\n" + "="*70)
-print("PHASE 1 BASELINE RESULTS")
+print("="*70)
+print("PHASE 1: MULTIPLE-CHOICE DIAGNOSTIC RESULTS")
 print("="*70)
 
-print(f"\n📊 Results on {total_count} cases:")
-print(f"   Correct: {correct_count}/{total_count}")
-print(f"   Accuracy: {accuracy:.1f}%")
+print(f"\n📊 Dataset Characteristics:")
+print(f"   Average options per case: {avg_options:.1f}")
+print(f"   Average random chance: {avg_random:.1f}%")
 
-print(f"\n💭 What this means:")
-if accuracy < 10:
-    print(f"   The base model has almost no diagnostic ability")
-    print(f"   This is expected - it wasn't trained on medical diagnosis")
-elif accuracy < 30:
-    print(f"   The base model has minimal diagnostic ability")
-    print(f"   Slightly better than random guessing (~2% for 49 diseases)")
+print(f"\n📈 Overall Performance:")
+print(f"   Total: {total} cases")
+print(f"   Correct: {correct_total}/{total}")
+print(f"   Accuracy: {overall_acc:.1f}%")
+
+print(f"\n✅ DIAGNOSED (Confidence ≥{CONFIDENCE_THRESHOLD:.0%} AND correct):")
+print(f"   Cases: {len(diagnosed)} ({len(diagnosed)/total*100:.1f}% coverage)")
+if diagnosed:
+    print(f"   Correct: {diag_correct}/{len(diagnosed)}")
+    print(f"   ⭐ ACCURACY: {diag_acc:.1f}%")
 else:
-    print(f"   The base model has some diagnostic ability from pre-training")
-    print(f"   But still needs fine-tuning for good performance")
+    print(f"   ⭐ ACCURACY: N/A (no cases above threshold)")
 
-print(f"\n✨ Next Steps:")
-print(f"   Phase 2: Fine-tune on DDXPlus training data")
-print(f"   Expected improvement: 20-30% accuracy → 60-70%")
+print(f"\n⚠️  REFERRED:")
+print(f"   Total referred:              {len(low_conf_referred) + len(wrong_referred)}")
+print(f"   → Low confidence:            {len(low_conf_referred)}")
+print(f"   → High confidence but wrong: {len(wrong_referred)}  ← caught by safety filter")
 
-# Save results
-import pandas as pd
+if wrong_referred:
+    print(f"\n🛡️  Cases caught by safety filter (high-conf but wrong):")
+    for r in wrong_referred:
+        print(f"   Case {r['case']:>3}: predicted '{r['predicted']}' "
+              f"(true: '{r['true_diagnosis']}', conf: {r['confidence']:.0%})")
+
 df = pd.DataFrame(results)
-df.to_csv('phase1_baseline_results.csv', index=False)
-print(f"\n✓ Results saved to: phase1_baseline_results.csv")
+df.to_csv('phase1_multichoice_results.csv', index=False)
+print(f"\n✓ Saved: phase1_multichoice_results.csv")
 
 print("\n" + "="*70)
-print("✅ PHASE 1 COMPLETE!")
+print("✅ PHASE 1 COMPLETE")
 print("="*70)
 
 print(f"""
-Summary:
-  • Tested base Llama model (no medical training)
-  • Evaluated on {total_count} diagnostic cases
-  • Baseline accuracy: {accuracy:.1f}%
-  • This establishes your starting point
+Multiple-Choice Diagnostic Evaluation:
+  • Model chooses from {avg_options:.0f} options per case
+  • Baseline (random): {avg_random:.1f}%
+  • Actual accuracy: {overall_acc:.1f}%
+  • Coverage at {CONFIDENCE_THRESHOLD:.0%}: {len(diagnosed)/total*100:.1f}%
+  • Safety filter caught {len(wrong_referred)} high-confidence wrong prediction(s)
 """)
