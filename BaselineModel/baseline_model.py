@@ -13,7 +13,7 @@ print("="*70)
 
 MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
 CONFIDENCE_THRESHOLD = 0.50
-EVAL_SIZE = 10
+EVAL_SIZE = 10000
 
 print(f"\n⚙️  Configuration:")
 print(f"   Model: {MODEL_NAME}")
@@ -35,10 +35,40 @@ DISEASE_TO_SPECIALIST = {
     "Anaphylaxis": "Call 911",
 }
 
+SEVERE_DISEASES = {
+    # Life-threatening emergencies
+    "Possible NSTEMI / STEMI",
+    "Unstable angina",
+    "Anaphylaxis",
+    "Pulmonary embolism",
+    "Spontaneous pneumothorax",
+    "Acute pulmonary edema",
+    "Epiglottitis",
+    "Boerhaave",
+    "Ebola",
+
+    # Serious chronic/life-altering
+    "HIV (initial infection)",
+    "Tuberculosis",
+    "Pancreatic neoplasm",
+    "Pulmonary neoplasm",
+    "Guillain-Barré syndrome",
+    "Myasthenia gravis",
+    "SLE",
+    "Chagas",
+    "Myocarditis",
+    "Pericarditis",
+    "Atrial fibrillation",
+    "Sarcoidosis",
+}
+
 def get_specialist(disease):
     return DISEASE_TO_SPECIALIST.get(disease, "Primary Care physician")
 
+
 print("[1/5] Loading model...")
+
+# Reverted model loading to use device_map="auto" and removed explicit device selection
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
@@ -102,15 +132,7 @@ for i in tqdm(range(EVAL_SIZE), desc="Evaluating"):
 
     options_text = "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)])
 
-    prompt = f"""Patient: {case['AGE']}-year-old {sex}
-Symptoms: {symptoms}
-
-Which diagnosis is most likely? Choose the number.
-
-Options:
-{options_text}
-
-Answer (number only):"""
+    prompt = f"""Patient: {case['AGE']}-year-old {sex}\nSymptoms: {symptoms}\n\nWhich diagnosis is most likely? Choose the number.\n\nOptions:\n{options_text}\n\nAnswer (number only):"""
 
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
@@ -152,12 +174,21 @@ Answer (number only):"""
 
     specialist = get_specialist(predicted_disease)
 
-    # CHANGE 1: action requires BOTH high confidence AND correct prediction
+    # CHANGE 1: action requires high confidence, correct prediction, AND not a severe disease
     high_confidence = model_confidence >= CONFIDENCE_THRESHOLD
-    action = "DIAGNOSE" if (high_confidence and is_correct) else "REFER"
-    refer_reason = "low_confidence" if not high_confidence else ("incorrect_prediction" if not is_correct else None)
+    is_severe = predicted_disease in SEVERE_DISEASES
+    action = "DIAGNOSE" if (high_confidence and is_correct and not is_severe) else "REFER"
 
-    # CHANGE 2: added high_confidence and refer_reason to results
+    # CHANGE 2: refer_reason now includes severe_disease as a possible reason
+    if is_severe:
+        refer_reason = "severe_disease"
+    elif not high_confidence:
+        refer_reason = "low_confidence"
+    elif not is_correct:
+        refer_reason = "incorrect_prediction"
+    else:
+        refer_reason = None
+
     results.append({
         'case':           i+1,
         'num_options':    num_options,
@@ -166,12 +197,13 @@ Answer (number only):"""
         'predicted':      predicted_disease,
         'confidence':     model_confidence,
         'high_confidence': high_confidence,
+        'is_severe':      is_severe,
         'action':         action,
         'refer_reason':   refer_reason,
         'correct':        '✓' if is_correct else '✗'
     })
 
-    if i < 5:
+    if i < 10:
         print(f"\n{'='*70}")
         print(f"CASE #{i+1}")
         print(f"{'='*70}")
@@ -185,7 +217,25 @@ Answer (number only):"""
         print(f"💬 SYSTEM OUTPUT TO USER:")
         print(f"{'─'*70}")
 
-        if model_confidence >= CONFIDENCE_THRESHOLD and is_correct:
+        if is_severe:
+            # Severe disease: NEVER mention the disease name to the user
+            print(f"\n⚠️  IMPORTANT MEDICAL NOTICE")
+            print(f"\n📊 Confidence Level: {model_confidence:.0%}")
+            print(f"\nBased on your symptoms, this assessment indicates a condition")
+            print(f"that requires immediate professional medical evaluation.")
+            print(f"\nFor your safety, I am unable to provide a specific diagnosis")
+            print(f"for this type of condition.")
+            print(f"\n🚨 STRONGLY RECOMMENDED:")
+            print(f"Please seek medical attention promptly.")
+            print(f"Consult: {specialist}")
+            print(f"\nA qualified healthcare professional will:")
+            print(f"• Perform a thorough medical evaluation")
+            print(f"• Order appropriate diagnostic tests")
+            print(f"• Provide an accurate diagnosis and treatment plan")
+            print(f"\n⚠️  If you are experiencing chest pain, difficulty breathing,")
+            print(f"severe allergic reactions, or other acute symptoms,")
+            print(f"please call emergency services (911) immediately.")
+        elif model_confidence >= CONFIDENCE_THRESHOLD and is_correct:
             print(f"\n✅ DIAGNOSIS: {predicted_disease}")
             print(f"\n📊 Confidence Level: {model_confidence:.0%}")
             print(f"\nBased on your symptoms ({symptoms[:60]}...), you likely have")
@@ -220,6 +270,8 @@ Answer (number only):"""
 
         print(f"{'─'*70}")
         print(f"\n📊 Evaluation Result: {'✅ CORRECT DIAGNOSIS' if is_correct else '❌ INCORRECT DIAGNOSIS'}")
+        if is_severe:
+            print(f"🛡️  Severe disease filter: disease name withheld from user")
         print(f"\n[Context: {num_options} possible diagnoses, random chance={random_chance:.1f}%]")
 
 print("\n[5/5] Calculating results...\n")
@@ -235,9 +287,10 @@ diag_acc = (diag_correct / len(diagnosed) * 100) if diagnosed else 0
 avg_options = sum(r['num_options'] for r in results) / len(results)
 avg_random  = sum(r['random_chance'] for r in results) / len(results)
 
-# CHANGE 3: replaced referred block with reason-based breakdown
+# CHANGE 3: added severe_disease referral breakdown
 low_conf_referred = [r for r in results if r['refer_reason'] == 'low_confidence']
 wrong_referred    = [r for r in results if r['refer_reason'] == 'incorrect_prediction']
+severe_referred   = [r for r in results if r['refer_reason'] == 'severe_disease']
 
 print("="*70)
 print("PHASE 1: MULTIPLE-CHOICE DIAGNOSTIC RESULTS")
@@ -252,7 +305,7 @@ print(f"   Total: {total} cases")
 print(f"   Correct: {correct_total}/{total}")
 print(f"   Accuracy: {overall_acc:.1f}%")
 
-print(f"\n✅ DIAGNOSED (Confidence ≥{CONFIDENCE_THRESHOLD:.0%} AND correct):")
+print(f"\n✅ DIAGNOSED (Confidence ≥{CONFIDENCE_THRESHOLD:.0%} AND correct AND not severe):")
 print(f"   Cases: {len(diagnosed)} ({len(diagnosed)/total*100:.1f}% coverage)")
 if diagnosed:
     print(f"   Correct: {diag_correct}/{len(diagnosed)}")
@@ -261,15 +314,22 @@ else:
     print(f"   ⭐ ACCURACY: N/A (no cases above threshold)")
 
 print(f"\n⚠️  REFERRED:")
-print(f"   Total referred:              {len(low_conf_referred) + len(wrong_referred)}")
+print(f"   Total referred:              {len(low_conf_referred) + len(wrong_referred) + len(severe_referred)}")
 print(f"   → Low confidence:            {len(low_conf_referred)}")
 print(f"   → High confidence but wrong: {len(wrong_referred)}  ← caught by safety filter")
+print(f"   → Severe disease withheld:   {len(severe_referred)}  ← caught by severity filter")
 
 if wrong_referred:
     print(f"\n🛡️  Cases caught by safety filter (high-conf but wrong):")
     for r in wrong_referred:
         print(f"   Case {r['case']:>3}: predicted '{r['predicted']}' "
               f"(true: '{r['true_diagnosis']}', conf: {r['confidence']:.0%})")
+
+if severe_referred:
+    print(f"\n🛡️  Cases caught by severity filter (disease name withheld from user):")
+    for r in severe_referred:
+        print(f"   Case {r['case']:>3}: predicted '{r['predicted']}' "
+              f"(conf: {r['confidence']:.0%}, correct: {r['correct']})")
 
 df = pd.DataFrame(results)
 df.to_csv('phase1_multichoice_results.csv', index=False)
@@ -286,4 +346,5 @@ Multiple-Choice Diagnostic Evaluation:
   • Actual accuracy: {overall_acc:.1f}%
   • Coverage at {CONFIDENCE_THRESHOLD:.0%}: {len(diagnosed)/total*100:.1f}%
   • Safety filter caught {len(wrong_referred)} high-confidence wrong prediction(s)
+  • Severity filter withheld {len(severe_referred)} severe disease name(s) from user
 """)
