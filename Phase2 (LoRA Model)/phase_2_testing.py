@@ -365,8 +365,8 @@ if severe_referred:
         )
 
 df = pd.DataFrame(results)
-df.to_csv("phase2_multichoice_results.csv", index=False)
-print(f"\n✓ Saved: phase2_multichoice_results.csv")
+df.to_csv("phase2_results.csv", index=False)
+print(f"\n✓ Saved: phase2_results.csv")
 
 print("\n" + "=" * 70)
 print("✅ PHASE 2 COMPLETE")
