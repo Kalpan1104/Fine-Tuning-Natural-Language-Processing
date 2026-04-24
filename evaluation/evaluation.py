@@ -2,24 +2,16 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-print("="*70)
-print("PASS@1 EVALUATION - PHASE 3 (Decision Layer in Code)")
-print("="*70)
-
 # ============================================
 # 1. Load Results
 # ============================================
 
 print("\n[1/5] Loading Phase 3 results...")
 
-df = pd.read_csv('phase3_results_50k.csv')
+df = pd.read_csv('phase3_results.csv')
 
 print(f"✓ Loaded {len(df):,} cases")
 print(f"\nColumns available: {list(df.columns)}")
-
-# ============================================
-# 1b. Fix column types
-# ============================================
 
 TRUTHY = {'✓', '✔', '☑', 'true', 'True', '1', 'yes', 'Yes'}
 df['correct'] = df['correct'].astype(str).str.strip().isin(TRUTHY)
@@ -183,7 +175,7 @@ fig.suptitle('Phase 3: Pass@1 Evaluation Results (Decision Layer in Code)',
 
 # Plot 1: Pass@1 Accuracy — Solid Correct + Stacked Wrong
 
-# Bar 1: Correct (solid green)
+# Bar 1: Correct 
 correct_pct = n_total_success / total_cases * 100
 ax1.bar('Correct', n_total_success, color='#2ecc71', alpha=0.85,
         edgecolor='black', linewidth=1.5, label=f'Correct ({correct_pct:.1f}%)')
@@ -237,10 +229,6 @@ print("\n✓ Saved: phase3_pass_at_1_analysis.png")
 # 6. Summary Report
 # ============================================
 
-print("\n" + "="*70)
-print("PASS@1 EVALUATION SUMMARY — PHASE 3")
-print("="*70)
-
 diag_acc_str = f"{diag_acc:.2f}%" if len(diagnosed) > 0 else "N/A"
 calibration_str = "✅ Good" if avg_conf_correct > avg_conf_wrong else "⚠️ Poor"
 safety_str = "✅ Passed" if (len(diagnosed) > 0 and len(referred) > 0 and diag_acc > ref_acc) else "⚠️ Check"
@@ -257,16 +245,6 @@ Pass@1 Criteria:
 
 Pass@1 Accuracy: {pass_at_1_accuracy:.2f}%
   • Total successes: {n_total_success:,}/{total_cases:,}
-
-Success Breakdown:
-  • ✅ Correct diagnosis: {n_success_correct:,} ({n_success_correct/total_cases*100:.1f}%)
-  • ✅ Severe disease referred: {n_success_severe_ref:,} ({n_success_severe_ref/total_cases*100:.1f}%)
-  • ✅ Low confidence referred: {n_success_low_conf_ref:,} ({n_success_low_conf_ref/total_cases*100:.1f}%)
-
-Failure Breakdown:
-  • ❌ Wrong diagnosis: {n_fail_wrong:,} ({n_fail_wrong/total_cases*100:.1f}%)
-  • ❌ Severe not referred: {n_fail_severe_unref:,} ({n_fail_severe_unref/total_cases*100:.1f}%)
-  • ❌ Low confidence not referred: {n_fail_low_conf_unref:,} ({n_fail_low_conf_unref/total_cases*100:.1f}%)
 
 Decision Breakdown:
   • Diagnosed: {len(diagnosed):,} ({len(diagnosed)/total_cases*100:.1f}%)
@@ -286,7 +264,3 @@ Key Metrics:
 Files Generated:
   ✓ phase3_pass_at_1_analysis.png (visualization)
 """)
-
-print("="*70)
-print("✅ PHASE 3 PASS@1 EVALUATION COMPLETE")
-print("="*70)
