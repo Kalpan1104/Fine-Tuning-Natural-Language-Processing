@@ -33,7 +33,10 @@ The model only handles diagnosis. The code guarantees safety.
 
 ## Project Structure
 
-├── datasets/EDA              # Dataset exploration and analysis
+```
+├── README.md
+├── datasets/
+│   └── EDA/
 │
 ├── src/
 │   ├── baseline.py                        # Phase 1a: raw model, no prompting
@@ -56,8 +59,7 @@ The model only handles diagnosis. The code guarantees safety.
 │   └── phase3/
 │       ├── phase3_results.csv
 │       └── plots/
-
----
+```
 
 ## Evaluation
 
