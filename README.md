@@ -1,5 +1,7 @@
 # Confidence-Aware Medical Diagnostic System
 
+**CS6120 NLP Group 11:** Lon Pierson, Shreya Chaudhary, Kalpan Shah, Chenjie Gu
+
 A medical diagnostic system built on **Llama-3.2-3B-Instruct** that can provide patients with a safe, surface-level diagnosis. The system knows when to diagnose and when to refer to a specialist.
 
 Built and evaluated using the [DDXPlus dataset](https://huggingface.co/datasets/aai530-group6/ddxplus) — 1.3M+ synthetic patient cases across 49 diseases.
